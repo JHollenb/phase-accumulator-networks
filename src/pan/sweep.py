@@ -50,12 +50,15 @@ def grid_search(
         grok_steps = []
 
         for seed in seeds:
-            sub = cfg.overlay(seed=seed, use_compile=False, **overrides, **fixed)
+            # overrides wins — so vary={"seed": [...]} works without collision
+            merged = {"seed": seed, "use_compile": False, **fixed, **overrides}
+            sub = cfg.overlay(**merged)
+            effective_seed = merged.get("seed", seed)
 
             wandb.init(
                 project=wandb.run.project if wandb.run else "pan",
                 group=wandb.run.group if wandb.run else "sweep",
-                name=f"{'-'.join(f'{k}={v}' for k,v in overrides.items())}-s{seed}",
+                name=f"{'-'.join(f'{k}={v}' for k,v in overrides.items())}-s{effective_seed}",
                 config=sub.model_dump(),
                 reinit=True,
             )

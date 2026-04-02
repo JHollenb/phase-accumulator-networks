@@ -47,8 +47,6 @@ class PhaseGate(nn.Module):
 class PAN(ModularModel):
     """
     Phase Accumulator Network: encode → mix → gate → decode.
-
-    ~743 params for P=113 K=5  vs  ~227K for Nanda's transformer.
     """
 
     def __init__(self, p: int, k: int = 5):
