@@ -1,8 +1,7 @@
-"""Configuration and training history data structures."""
+"""Training configuration."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -39,23 +38,7 @@ class TrainConfig(BaseModel):
     output_dir: Path = Field(default_factory=lambda: Path("."))
     save_model: bool = False
     dry_run: bool = False
+    record_checkpoints: bool = False
 
-    def overlay(self, **overrides) -> "TrainConfig":
-        """Return a new config with selected fields replaced."""
-        return self.model_copy(update=overrides)
-
-
-@dataclass
-class TrainHistory:
-    """Mutable accumulator for metrics recorded during training."""
-
-    steps: list[int] = field(default_factory=list)
-    train_loss: list[float] = field(default_factory=list)
-    val_loss: list[float] = field(default_factory=list)
-    val_acc: list[float] = field(default_factory=list)
-    grok_step: Optional[int] = None
-
-    # Tier 3 mechanistic checkpoints
-    freq_checkpoints: dict = field(default_factory=dict)
-    fourier_conc_steps: list[int] = field(default_factory=list)
-    fourier_conc_values: list[float] = field(default_factory=list)
+    def overlay(self, **kw) -> "TrainConfig":
+        return self.model_copy(update=kw)

@@ -1,6 +1,6 @@
 [project]
 name = "pan"
-version = "0.1.0"
+version = "0.2.0"
 description = "Phase Accumulator Network — sinusoidal phase arithmetic for modular addition"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -10,14 +10,14 @@ authors = [{ name = "Jacob Hollenbeck" }]
 dependencies = [
     "torch>=2.1",
     "numpy>=1.24",
-    "matplotlib>=3.7",
-    "rich>=13.0",
+    "wandb>=0.17",
     "typer>=0.9",
-    "pydantic>=2.0",
+    "rich>=13.0",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.4"]
+plot = ["plotly>=5.18", "pandas>=2.1"]  # post-hoc paper figures from wandb exports
 
 [project.scripts]
 pan = "pan.cli:app"
