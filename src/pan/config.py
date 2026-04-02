@@ -39,6 +39,23 @@ class TrainConfig(BaseModel):
     save_model: bool = False
     dry_run: bool = False
     record_checkpoints: bool = False
+    log_console: bool = True  # print progress lines during training
 
     def overlay(self, **kw) -> "TrainConfig":
         return self.model_copy(update=kw)
+
+    def to_dict(self) -> dict:
+        """Serialise to a plain dict (Path → str for JSON safety)."""
+        d = self.model_dump()
+        d["output_dir"] = str(d["output_dir"])
+        return d
+
+    def to_str(self) -> str:
+        """Human-readable multi-line summary of non-default fields."""
+        defaults = TrainConfig()
+        lines = []
+        for key, val in self.to_dict().items():
+            default_val = defaults.to_dict().get(key)
+            marker = "" if val == default_val else " ←"
+            lines.append(f"  {key:>20}: {val}{marker}")
+        return "\n".join(lines)

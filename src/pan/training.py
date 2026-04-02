@@ -57,6 +57,12 @@ def train(
 
     Returns grok_step (or None).
     """
+    # Print config to console
+    if cfg.log_console:
+        console.print(f"\n  [bold cyan]┌─ {label} ─────────────────────────────────────[/]")
+        console.print(cfg.to_str())
+        console.print(f"  [bold cyan]└──────────────────────────────────────────────[/]")
+
     if cfg.dry_run:
         console.print(f"  [yellow]dry-run[/] {label} — {cfg.n_steps:,} steps skipped")
         return None
@@ -81,6 +87,8 @@ def train(
     n_train = len(train_x)
     grok_step = None
     t0 = time.time()
+    # How often to print a console progress line (every 5 log intervals)
+    console_every = cfg.log_every * 5
 
     for step in range(cfg.n_steps):
         compiled.train()
@@ -122,6 +130,17 @@ def train(
 
             wandb.log(metrics)
 
+            # Periodic console progress
+            if cfg.log_console and step % console_every == 0:
+                elapsed = time.time() - t0
+                console.print(
+                    f"  [{label}] step={step:>6,} | "
+                    f"train_loss={loss.item():.3f} | "
+                    f"val_loss={vl:.3f} | "
+                    f"val_acc={va:.3f} | "
+                    f"{elapsed:.0f}s"
+                )
+
             if va > 0.99 and grok_step is None:
                 grok_step = step
                 console.print(
@@ -130,5 +149,11 @@ def train(
                 )
                 if cfg.early_stop:
                     break
+
+    # Final summary
+    elapsed = time.time() - t0
+    if cfg.log_console:
+        status = f"grokked @ {grok_step:,}" if grok_step else "did not grok"
+        console.print(f"  [dim]{label} done[/] — {status} — {elapsed:.0f}s total")
 
     return grok_step
