@@ -1,111 +1,76 @@
-import argparse
+"""CLI entry point — powered by Typer."""
 
-from pan.utils import *
-from pan.core import say_hello
+from __future__ import annotations
 
-def main():
-    parser = argparse.ArgumentParser(
-        description='Phase Accumulator Network',
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+from pathlib import Path
+from typing import Optional
 
-    parser.add_argument('--mode',
-                        choices=['compare', 'sweep', 'primes', 'tier3',
-                                 'dw_sweep', 'wd_sweep', 'k8_sweep',
-                                 'tf_sweep', 'held_out_primes'],
-                        default='compare')
-    parser.add_argument('--p',     type=int,   default=113,
-                        help='Prime for modular arithmetic')
-    parser.add_argument('--k',     type=int,   default=5,
-                        help='Phase frequencies (PAN only)')
-    parser.add_argument('--steps', type=int,   default=50_000)
-    parser.add_argument('--seed',  type=int,   default=42)
-    parser.add_argument('--weight-decay', type=float, default=1.0,
-                        help='AdamW weight decay. Nanda uses 1.0 for the '
-                             'transformer. Try 0.1 for PAN — it has 300x '
-                             'fewer params and 1.0 may suppress grokking.')
-    parser.add_argument('--diversity-weight', type=float, default=0.01,
-                        help='Off-diagonal Gram penalty to prevent PAN mode '
-                             'collapse (all K gates converging to one frequency). '
-                             '0.01 is a light nudge; 0.1 is strong. 0 disables.')
-    parser.add_argument('--baseline-only', action='store_true')
-    parser.add_argument('--output-dir', type=str, default='.',
-                        help='Directory to write plot PNGs into. '
-                             'Defaults to cwd. The bash script passes the '
-                             'run dir here directly, avoiding any mv race.')
-    parser.add_argument('--save-model', action='store_true',
-                        help='Save trained model state_dict to output_dir '
-                             'as pan_<label>_<step>.pt after training. '
-                             'Always enabled for tier3 mode.')
-    parser.add_argument('--dry-run', action='store_true',
-                        help='Print every sub-run config and total run count, '
-                             'then exit without training. Use to verify overnight '
-                             'sweep parameters before committing.')
+import typer
+from rich.console import Console
+from rich.table import Table
 
-    # ── Performance flags ────────────────────────────────────────────────
-    perf = parser.add_argument_group('performance (macOS / MPS)')
-    perf.add_argument('--no-compile', action='store_true',
-                      help='Disable torch.compile (fallback for older PyTorch)')
-    perf.add_argument('--val-samples', type=int, default=None,
-                      metavar='N',
-                      help='Subsample val set to N examples for faster evals. '
-                           '1024 recommended for sweep mode. '
-                           'None = full val set (default, use for final runs).')
-    perf.add_argument('--log-every', type=int, default=200,
-                      help='Log + eval every N steps. '
-                           '500 saves ~50s per 50K run.')
-    perf.add_argument('--no-early-stop', action='store_true',
-                      help='Continue training after grokking '
-                           '(use for full loss curve plots)')
+from pan.config import TrainConfig
+from pan.constants import DEVICE
 
-    args = parser.parse_args()
+# Import experiment modules so they register themselves
+import pan.experiments.compare     # noqa: F401
+import pan.experiments.sweep       # noqa: F401
+import pan.experiments.primes      # noqa: F401
+import pan.experiments.tier3       # noqa: F401
+import pan.experiments.sweeps      # noqa: F401
+import pan.experiments as registry
 
-    # TODO - Train
+app = typer.Typer(help="Phase Accumulator Network — sinusoidal phase arithmetic for grokking",
+                  no_args_is_help=True, rich_markup_mode="rich")
+console = Console()
 
-    # TODO - Improve header
-    print(f"\n Phase Accumulator Network")
-    print(f" {'─'*44}")
-    print(f"  Device:       {DEVICE}")
-    print(f"  Mode:         {args.mode}")
-    # print(f"  P={cfg.p}  K={cfg.k_freqs}  steps={cfg.n_steps:,}  seed={cfg.seed}")
-    # print(f"  weight_decay:     {cfg.weight_decay}")
-    # print(f"  diversity_weight: {cfg.diversity_weight}")
-    # compile_note = use_compile
-    # if args.mode in ('sweep', 'primes', 'dw_sweep', 'wd_sweep', 'k8_sweep', 'tf_sweep'):
-    #     compile_note = f"{cfg.use_compile} (outer); sub-runs use False"
-    # elif args.mode == 'tier3':
-    #     compile_note = f"{cfg.use_compile} (outer); tier3 sub-run uses False"
-    # print(f"  compile:          {compile_note}")
-    # if args.mode == 'tier3':
-    #     print(f"  [tier3]  compile forced False; early_stop forced False; record_checkpoints=True; save_model=True")
-    # print(f"  val_samples:  {cfg.val_samples or 'full'}")
-    # print(f"  log_every:    {cfg.log_every}")
-    # print(f"  early_stop:   {cfg.early_stop}")
 
-    # if args.baseline_only:
-    #     train_x, train_y, val_x, val_y = make_modular_dataset(cfg.p, seed=cfg.seed)
-    #     tf = TransformerBaseline(cfg.p).to(DEVICE)
-    #     print(f"\n Transformer parameters: {tf.count_parameters():,}")
-    #     hist = train(tf, cfg, train_x, train_y, val_x, val_y, label="TF")
-    #     print(f"\n Grokking step: {hist.grok_step or 'did not grok'}")
-    #     return
-    #
-    # Dry-run: print summary counts before dispatching so user knows what's coming
-    # if cfg.dry_run:
-    #     run_counts = {
-    #         'compare':         ('PAN + TF', 2, cfg.n_steps),
-    #     }
-    #     if args.mode in run_counts:
-    #         desc, n_runs, steps = run_counts[args.mode]
-    #         print(f"\n  [dry-run] mode={args.mode}")
-    #         print(f"  [dry-run] {desc}  →  {n_runs} total runs  ×  {steps:,} steps each")
-    #         print(f"  [dry-run] estimated wall time: "
-    #               f"~{n_runs * steps / 50_000 * 1.2:.0f} min on MPS")
-    #         print(f"  [dry-run] training will be skipped — each run prints config and exits\n")
-    #
-    # if args.mode == 'compare':
-    #     run_main_comparison(cfg)
-    print("running say_hello..")
-    print(say_hello(DEVICE))
+@app.command()
+def run(
+    experiment: str = typer.Argument(help="Experiment name (see `pan list`)"),
+    p: int = typer.Option(113, help="Prime for modular arithmetic"),
+    k: int = typer.Option(5, "--k", help="Phase frequencies (PAN)"),
+    steps: int = typer.Option(50_000, help="Training steps"),
+    seed: int = typer.Option(42, help="Random seed"),
+    weight_decay: float = typer.Option(0.01, "--wd", help="AdamW weight decay"),
+    diversity_weight: float = typer.Option(0.01, "--dw", help="Diversity regularisation"),
+    val_samples: Optional[int] = typer.Option(None, help="Subsample val set (None = full)"),
+    no_compile: bool = typer.Option(False, help="Disable torch.compile"),
+    no_early_stop: bool = typer.Option(False, help="Train past grokking"),
+    log_every: int = typer.Option(200, help="Log interval"),
+    output_dir: Path = typer.Option(".", "--out", help="Output directory"),
+    save_model: bool = typer.Option(False, help="Save model weights"),
+    dry_run: bool = typer.Option(False, help="Print config, skip training"),
+):
+    """Run a registered experiment."""
+    cfg = TrainConfig(
+        p=p, k_freqs=k, n_steps=steps, seed=seed,
+        weight_decay=weight_decay, diversity_weight=diversity_weight,
+        val_samples=val_samples, use_compile=not no_compile,
+        early_stop=not no_early_stop, log_every=log_every,
+        output_dir=output_dir, save_model=save_model, dry_run=dry_run,
+    )
 
-if __name__ == '__main__':
-    main()
+    console.print(f"\n[bold]Phase Accumulator Network[/]")
+    console.print(f"  Device: {DEVICE}   Experiment: [cyan]{experiment}[/]")
+    console.print(f"  P={cfg.p}  K={cfg.k_freqs}  steps={cfg.n_steps:,}  seed={cfg.seed}")
+    console.print(f"  wd={cfg.weight_decay}  dw={cfg.diversity_weight}  "
+                  f"compile={cfg.use_compile}  early_stop={cfg.early_stop}\n")
+
+    fn = registry.get(experiment)
+    return fn(cfg)
+
+
+@app.command("list")
+def list_experiments():
+    """Show all registered experiments."""
+    table = Table(title="Available Experiments")
+    table.add_column("Name", style="cyan")
+    table.add_column("Description")
+    for name, help_text in registry.list_experiments().items():
+        table.add_row(name, help_text)
+    console.print(table)
+
+
+if __name__ == "__main__":
+    app()

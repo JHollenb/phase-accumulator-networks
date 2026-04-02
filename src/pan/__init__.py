@@ -1,7 +1,12 @@
-"""Phase Accumulator Networks — public API."""
+"""Phase Accumulator Network — sinusoidal phase arithmetic for modular addition."""
 
-#from .core import PhaseAccumulator, train, evaluate  # expose the important stuff
-#from .cli import main as cli_main
+from pan.models import PAN, Transformer
+from pan.config import TrainConfig, TrainHistory
+from pan.data import make_modular_dataset
+from pan.training import train
+from pan.constants import DEVICE, TWO_PI, PHASE_SCALE
 
-__version__ = "0.1.0"
-#__all__ = ["PhaseAccumulator", "train", "evaluate", "cli_main"]
+__all__ = [
+    "PAN", "Transformer", "TrainConfig", "TrainHistory",
+    "make_modular_dataset", "train", "DEVICE",
+]
