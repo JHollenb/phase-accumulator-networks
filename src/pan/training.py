@@ -61,6 +61,13 @@ def train(
         console.print(f"  [yellow]dry-run[/] {label} — {cfg.n_steps:,} steps skipped")
         return None
 
+    # Tell wandb that all "{label}/*" metrics use their own step axis.
+    # This lets multiple models (PAN, TF) train in the same run without
+    # step-monotonicity conflicts.
+    step_key = f"{label}/step"
+    wandb.define_metric(step_key)
+    wandb.define_metric(f"{label}/*", step_metric=step_key)
+
     torch.manual_seed(cfg.seed)
     compiled = _maybe_compile(model, cfg.use_compile)
     opt = torch.optim.AdamW(compiled.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
@@ -97,10 +104,10 @@ def train(
                 va = (compiled(ex).argmax(-1) == ey).float().mean().item()
 
             metrics = {
+                step_key: step,
                 f"{label}/train_loss": loss.item(),
                 f"{label}/val_loss": vl,
                 f"{label}/val_acc": va,
-                "step": step,
             }
 
             # Mechanistic checkpoints for PAN
@@ -113,7 +120,7 @@ def train(
                     metrics[f"{label}/err_b_{i}"] = float(info["error_b"][i])
                 metrics[f"{label}/fourier_conc"] = _fourier_concentration(raw.dec.weight.detach())
 
-            wandb.log(metrics, step=step)
+            wandb.log(metrics)
 
             if va > 0.99 and grok_step is None:
                 grok_step = step
