@@ -1,14 +1,10 @@
-"""W&B-friendly training loop for PAN experiments.
+"""Sweep-friendly training entrypoint for PAN.
 
 Pattern:
-- train(..., config=None) is the main entrypoint
-- wandb.init(config=...) happens inside train()
-- wandb.config is treated as the source of truth after init()
-- works for:
-    1) normal runs
-    2) wandb sweeps via wandb.agent(..., function=train_wrapper)
-
-Returns grok_step (or None).
+- experiment.py defines sweep_configuration and starts wandb.agent(...)
+- this file owns wandb.init(...)
+- wandb.config becomes the source of truth for the sampled hyperparameters
+- model/data are built after config is resolved
 """
 
 from __future__ import annotations
@@ -27,6 +23,8 @@ from rich.console import Console
 
 from pan.config import TrainConfig
 from pan.constants import DEVICE
+from pan.data import make_modular_dataset
+from pan.models import build
 from pan.models.base import ModularModel
 from pan.models.pan import PAN
 
@@ -78,6 +76,8 @@ def _param_norm(model: nn.Module) -> float:
 
 
 def _cfg_to_dict(cfg: Any) -> dict[str, Any]:
+    if hasattr(cfg, "model_dump") and callable(cfg.model_dump):
+        return dict(cfg.model_dump())
     if hasattr(cfg, "to_dict") and callable(cfg.to_dict):
         return dict(cfg.to_dict())
     if is_dataclass(cfg):
@@ -113,38 +113,46 @@ def _coerce_like(value: Any, like: Any) -> Any:
 
 
 def _merge_cfg_from_wandb(base_cfg: TrainConfig, wb_cfg: Any) -> TrainConfig:
-    """Return a cfg with fields overridden by wandb.config when names match."""
+    """Overlay wandb.config values onto base_cfg when field names match."""
     updates = {}
     for key, value in dict(wb_cfg).items():
         if hasattr(base_cfg, key):
-            current = getattr(base_cfg, key)
-            updates[key] = _coerce_like(value, current)
+            updates[key] = _coerce_like(value, getattr(base_cfg, key))
+
+    if hasattr(base_cfg, "overlay") and callable(base_cfg.overlay):
+        return base_cfg.overlay(**updates)
 
     if is_dataclass(base_cfg):
         return replace(base_cfg, **updates)
 
-    # fallback for non-dataclass configs
     for key, value in updates.items():
         setattr(base_cfg, key, value)
     return base_cfg
 
 
-def build_config_defaults(cfg: TrainConfig, *, label: str = "model") -> dict[str, Any]:
-    """Config passed to wandb.init(config=...). Safe for both regular runs and sweeps."""
-    defaults = _cfg_to_dict(cfg)
-
-    # Common experiment metadata fields; sweeps can override these too.
-    defaults.setdefault("label", label)
-    defaults.setdefault("project", "pan")
-    defaults.setdefault("group", None)
-    defaults.setdefault("job_type", "train")
-    defaults.setdefault("tags", None)
-
-    # W&B behavior toggles
-    defaults.setdefault("watch_model", False)
-    defaults.setdefault("watch_log_freq", max(getattr(cfg, "log_every", 50), 50))
-
-    return defaults
+def _build_init_config(
+    base_cfg: TrainConfig,
+    *,
+    project: str,
+    group: str,
+    label: str,
+    arch: str,
+    extra_config: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    cfg = _cfg_to_dict(base_cfg)
+    cfg.update(
+        {
+            "project": project,
+            "group": group,
+            "label": label,
+            "arch": arch,
+            "watch_model": False,
+            "watch_log_freq": max(getattr(base_cfg, "log_every", 100), 100),
+        }
+    )
+    if extra_config:
+        cfg.update(extra_config)
+    return cfg
 
 
 _defined_metric_namespaces: set[str] = set()
@@ -155,7 +163,6 @@ def reset_metrics() -> None:
 
 
 def define_wandb_metrics(label: str) -> None:
-    """Define metrics once per run/namespace."""
     if label in _defined_metric_namespaces:
         return
 
@@ -169,19 +176,19 @@ def define_wandb_metrics(label: str) -> None:
     wandb.define_metric(f"{label}/best_val_acc", summary="max")
     wandb.define_metric(f"{label}/best_val_loss", summary="min")
     wandb.define_metric(f"{label}/grok_step", summary="min")
-    wandb.define_metric(f"{label}/examples_per_sec", summary="mean")
-    wandb.define_metric(f"{label}/step_time_sec", summary="mean")
     wandb.define_metric(f"{label}/grad_norm", summary="last")
     wandb.define_metric(f"{label}/param_norm", summary="last")
+    wandb.define_metric(f"{label}/examples_per_sec", summary="mean")
+    wandb.define_metric(f"{label}/step_time_sec", summary="mean")
 
     _defined_metric_namespaces.add(label)
 
 
 # -----------------------------------------------------------------------------
-# Training
+# Core loop (no wandb.init here)
 # -----------------------------------------------------------------------------
 
-def train(
+def train_loop(
     model: ModularModel,
     cfg: TrainConfig,
     train_x: torch.Tensor,
@@ -189,182 +196,206 @@ def train(
     val_x: torch.Tensor,
     val_y: torch.Tensor,
     *,
-    config: Optional[dict[str, Any]] = None,
+    label: str = "pan",
 ) -> Optional[int]:
     """
-    Sweep-friendly training entrypoint.
+    Train model and log to the active wandb run.
 
-    Pattern:
-        grok_step = train(model, cfg, train_x, train_y, val_x, val_y)
-
-    or for sweeps:
-        wandb.agent(sweep_id, function=lambda: train(...))
-
-    Args:
-        model: already-constructed model
-        cfg: baseline TrainConfig
-        train_x/train_y/val_x/val_y: tensors on the correct device
-        config: optional overrides passed to wandb.init(config=config)
-
-    Returns:
-        grok_step if val_acc first exceeds 0.99 else None
+    Returns grok_step (or None).
     """
-    config_defaults = build_config_defaults(cfg)
+    define_wandb_metrics(label)
 
-    if config is not None:
-        config_defaults.update(config)
+    if cfg.log_console:
+        console.print(f"\n  [bold cyan]┌─ {label} ─────────────────────────────────────[/]")
+        if hasattr(cfg, "to_str") and callable(cfg.to_str):
+            console.print(cfg.to_str())
+        else:
+            console.print(str(_cfg_to_dict(cfg)))
+        console.print(f"  [bold cyan]└──────────────────────────────────────────────[/]")
 
-    with wandb.init(
-        project=config_defaults.get("project"),
-        group=config_defaults.get("group"),
-        job_type=config_defaults.get("job_type", "train"),
-        tags=config_defaults.get("tags"),
-        config=config_defaults,
-    ):
-        wb_cfg = wandb.config
-        label = wb_cfg.label
+    if cfg.dry_run:
+        console.print(f"  [yellow]dry-run[/] {label} — {cfg.n_steps:,} steps skipped")
+        wandb.log({f"{label}/step": 0, f"{label}/dry_run": 1})
+        return None
 
-        # Merge sweep-sampled params back into TrainConfig
-        cfg = _merge_cfg_from_wandb(cfg, wb_cfg)
+    torch.manual_seed(cfg.seed)
 
-        define_wandb_metrics(label)
+    compiled = _maybe_compile(model, getattr(cfg, "use_compile", False))
+    raw = _unwrap(compiled)
 
-        if cfg.log_console:
-            console.print(f"\n  [bold cyan]┌─ {label} ─────────────────────────────────────[/]")
-            if hasattr(cfg, "to_str") and callable(cfg.to_str):
-                console.print(cfg.to_str())
-            else:
-                console.print(str(_cfg_to_dict(cfg)))
-            console.print(f"  [bold cyan]└──────────────────────────────────────────────[/]")
+    opt = torch.optim.AdamW(
+        compiled.parameters(),
+        lr=cfg.lr,
+        weight_decay=cfg.weight_decay,
+    )
 
-        if cfg.dry_run:
-            console.print(f"  [yellow]dry-run[/] {label} — {cfg.n_steps:,} steps skipped")
-            wandb.log({f"{label}/step": 0, f"{label}/dry_run": 1})
-            return None
+    if bool(wandb.config.get("watch_model", False)):
+        wandb.watch(raw, log="all", log_freq=int(wandb.config.get("watch_log_freq", cfg.log_every)))
 
-        torch.manual_seed(cfg.seed)
+    ex, ey = val_x, val_y
+    if getattr(cfg, "val_samples", None) and cfg.val_samples < len(val_x):
+        idx = torch.randperm(len(val_x), device=DEVICE)[: cfg.val_samples]
+        ex, ey = val_x[idx], val_y[idx]
 
-        compiled = _maybe_compile(model, cfg.use_compile)
-        raw = _unwrap(compiled)
+    n_train = len(train_x)
+    grok_step: Optional[int] = None
+    best_val_acc = float("-inf")
+    best_val_loss = float("inf")
+    t0 = time.time()
+    console_every = cfg.log_every * 5
 
-        opt = torch.optim.AdamW(
-            compiled.parameters(),
-            lr=cfg.lr,
-            weight_decay=cfg.weight_decay,
-        )
+    # ensure these exist even if n_steps == 0
+    last_vl = None
+    last_va = None
 
-        if bool(wb_cfg.get("watch_model", False)):
-            wandb.watch(raw, log="all", log_freq=int(wb_cfg.get("watch_log_freq", cfg.log_every)))
+    for step in range(cfg.n_steps):
+        step_t0 = time.time()
 
-        # Subsample val set if requested
-        ex, ey = val_x, val_y
-        if cfg.val_samples and cfg.val_samples < len(val_x):
-            idx = torch.randperm(len(val_x), device=DEVICE)[: cfg.val_samples]
-            ex, ey = val_x[idx], val_y[idx]
+        compiled.train()
+        idx = torch.randperm(n_train, device=DEVICE)[: cfg.batch_size]
+        batch_x, batch_y = train_x[idx], train_y[idx]
 
-        n_train = len(train_x)
-        grok_step: Optional[int] = None
-        best_val_acc = float("-inf")
-        best_val_loss = float("inf")
-        t0 = time.time()
-        console_every = cfg.log_every * 5
+        logits = compiled(batch_x)
+        loss = F.cross_entropy(logits, batch_y)
 
-        for step in range(cfg.n_steps):
-            step_t0 = time.time()
+        if cfg.diversity_weight > 0:
+            loss = loss + cfg.diversity_weight * raw.auxiliary_loss(batch_x, logits)
 
-            compiled.train()
-            idx = torch.randperm(n_train, device=DEVICE)[: cfg.batch_size]
-            batch_x, batch_y = train_x[idx], train_y[idx]
+        opt.zero_grad(set_to_none=True)
+        loss.backward()
+        grad_norm = _grad_norm(raw)
+        opt.step()
 
-            logits = compiled(batch_x)
-            loss = F.cross_entropy(logits, batch_y)
+        step_time = time.time() - step_t0
+        examples_per_sec = cfg.batch_size / max(step_time, 1e-9)
 
-            if cfg.diversity_weight > 0:
-                loss = loss + cfg.diversity_weight * raw.auxiliary_loss(batch_x, logits)
+        if step % cfg.log_every == 0 or step == cfg.n_steps - 1:
+            compiled.eval()
+            with torch.no_grad():
+                val_logits = compiled(ex)
+                vl = F.cross_entropy(val_logits, ey).item()
+                va = (val_logits.argmax(-1) == ey).float().mean().item()
 
-            opt.zero_grad(set_to_none=True)
-            loss.backward()
+            last_vl = vl
+            last_va = va
+            best_val_acc = max(best_val_acc, va)
+            best_val_loss = min(best_val_loss, vl)
 
-            grad_norm = _grad_norm(raw)
-            opt.step()
-
-            step_time = time.time() - step_t0
-            examples_per_sec = cfg.batch_size / max(step_time, 1e-9)
-
-            if step % cfg.log_every == 0 or step == cfg.n_steps - 1:
-                compiled.eval()
-                with torch.no_grad():
-                    val_logits = compiled(ex)
-                    vl = F.cross_entropy(val_logits, ey).item()
-                    va = (val_logits.argmax(-1) == ey).float().mean().item()
-
-                best_val_acc = max(best_val_acc, va)
-                best_val_loss = min(best_val_loss, vl)
-
-                if va > 0.99 and grok_step is None:
-                    grok_step = step
-                    if cfg.log_console:
-                        console.print(
-                            f"  [bold green]★ {label} GROKKED[/] step={step:,} "
-                            f"acc={va:.3f} ({time.time() - t0:.0f}s)"
-                        )
-
-                metrics = {
-                    f"{label}/step": step,
-                    f"{label}/train_loss": float(loss.item()),
-                    f"{label}/val_loss": float(vl),
-                    f"{label}/val_acc": float(va),
-                    f"{label}/best_val_acc": float(best_val_acc),
-                    f"{label}/best_val_loss": float(best_val_loss),
-                    f"{label}/grok": float(va > 0.99),
-                    f"{label}/grok_step": grok_step if grok_step is not None else -1,
-                    f"{label}/lr": float(opt.param_groups[0]["lr"]),
-                    f"{label}/grad_norm": float(grad_norm),
-                    f"{label}/param_norm": float(_param_norm(raw)),
-                    f"{label}/step_time_sec": float(step_time),
-                    f"{label}/examples_per_sec": float(examples_per_sec),
-                    f"{label}/elapsed_sec": float(time.time() - t0),
-                }
-
-                # PAN-specific mechanistic metrics
-                if cfg.record_checkpoints and isinstance(raw, PAN):
-                    info = raw.get_learned_frequencies()
-                    for i in range(raw.k):
-                        metrics[f"{label}/freq_a_{i}"] = float(info["learned_a"][i])
-                        metrics[f"{label}/freq_b_{i}"] = float(info["learned_b"][i])
-                        metrics[f"{label}/err_a_{i}"] = float(info["error_a"][i])
-                        metrics[f"{label}/err_b_{i}"] = float(info["error_b"][i])
-                    metrics[f"{label}/fourier_conc"] = float(
-                        _fourier_concentration(raw.dec.weight.detach())
-                    )
-
-                wandb.log(metrics)
-
-                if cfg.log_console and step % console_every == 0:
-                    elapsed = time.time() - t0
+            if va > 0.99 and grok_step is None:
+                grok_step = step
+                if cfg.log_console:
                     console.print(
-                        f"  [{label}] step={step:>6,} | "
-                        f"train_loss={loss.item():.4f} | "
-                        f"val_loss={vl:.4f} | "
-                        f"val_acc={va:.4f} | "
-                        f"grad_norm={grad_norm:.3f} | "
-                        f"{examples_per_sec:.1f} ex/s | "
-                        f"{elapsed:.0f}s"
+                        f"  [bold green]★ {label} GROKKED[/] step={step:,} "
+                        f"acc={va:.3f} ({time.time() - t0:.0f}s)"
                     )
 
-                if grok_step is not None and cfg.early_stop:
-                    break
+            metrics = {
+                f"{label}/step": step,
+                f"{label}/train_loss": float(loss.item()),
+                f"{label}/val_loss": float(vl),
+                f"{label}/val_acc": float(va),
+                f"{label}/best_val_acc": float(best_val_acc),
+                f"{label}/best_val_loss": float(best_val_loss),
+                f"{label}/grok": float(va > 0.99),
+                f"{label}/grok_step": grok_step if grok_step is not None else -1,
+                f"{label}/lr": float(opt.param_groups[0]["lr"]),
+                f"{label}/grad_norm": float(grad_norm),
+                f"{label}/param_norm": float(_param_norm(raw)),
+                f"{label}/step_time_sec": float(step_time),
+                f"{label}/examples_per_sec": float(examples_per_sec),
+                f"{label}/elapsed_sec": float(time.time() - t0),
+            }
 
-        elapsed = time.time() - t0
-        wandb.summary[f"{label}/elapsed_sec"] = float(elapsed)
-        wandb.summary[f"{label}/final_val_acc"] = float(va)
-        wandb.summary[f"{label}/final_val_loss"] = float(vl)
-        wandb.summary[f"{label}/best_val_acc"] = float(best_val_acc)
-        wandb.summary[f"{label}/best_val_loss"] = float(best_val_loss)
-        wandb.summary[f"{label}/grok_step"] = grok_step
+            if cfg.record_checkpoints and isinstance(raw, PAN):
+                info = raw.get_learned_frequencies()
+                for i in range(raw.k):
+                    metrics[f"{label}/freq_a_{i}"] = float(info["learned_a"][i])
+                    metrics[f"{label}/freq_b_{i}"] = float(info["learned_b"][i])
+                    metrics[f"{label}/err_a_{i}"] = float(info["error_a"][i])
+                    metrics[f"{label}/err_b_{i}"] = float(info["error_b"][i])
+                metrics[f"{label}/fourier_conc"] = float(
+                    _fourier_concentration(raw.dec.weight.detach())
+                )
 
-        if cfg.log_console:
-            status = f"grokked @ {grok_step:,}" if grok_step is not None else "did not grok"
-            console.print(f"  [dim]{label} done[/] — {status} — {elapsed:.0f}s total")
+            wandb.log(metrics)
 
-        return grok_step
+            if cfg.log_console and step % console_every == 0:
+                elapsed = time.time() - t0
+                console.print(
+                    f"  [{label}] step={step:>6,} | "
+                    f"train_loss={loss.item():.4f} | "
+                    f"val_loss={vl:.4f} | "
+                    f"val_acc={va:.4f} | "
+                    f"grad_norm={grad_norm:.3f} | "
+                    f"{examples_per_sec:.1f} ex/s | "
+                    f"{elapsed:.0f}s"
+                )
+
+            if grok_step is not None and getattr(cfg, "early_stop", False):
+                break
+
+    elapsed = time.time() - t0
+    wandb.summary[f"{label}/elapsed_sec"] = float(elapsed)
+    wandb.summary[f"{label}/best_val_acc"] = float(best_val_acc) if best_val_acc != float("-inf") else None
+    wandb.summary[f"{label}/best_val_loss"] = float(best_val_loss) if best_val_loss != float("inf") else None
+    wandb.summary[f"{label}/final_val_acc"] = float(last_va) if last_va is not None else None
+    wandb.summary[f"{label}/final_val_loss"] = float(last_vl) if last_vl is not None else None
+    wandb.summary[f"{label}/grok_step"] = grok_step
+
+    if isinstance(raw, PAN):
+        wandb.summary["mode_collapsed"] = raw.is_mode_collapsed()
+
+    if cfg.log_console:
+        status = f"grokked @ {grok_step:,}" if grok_step is not None else "did not grok"
+        console.print(f"  [dim]{label} done[/] — {status} — {elapsed:.0f}s total")
+
+    return grok_step
+
+
+# -----------------------------------------------------------------------------
+# Sweep-friendly run entrypoint
+# -----------------------------------------------------------------------------
+
+def run_training(
+    base_cfg: TrainConfig,
+    *,
+    arch: str = "pan",
+    project: str = "pan",
+    group: str = "k-sweep",
+    label: str = "pan",
+    extra_config: Optional[dict[str, Any]] = None,
+) -> Optional[int]:
+    """
+    Start a W&B run, merge sampled hyperparameters from wandb.config into cfg,
+    then build model/data and execute training.
+
+    This is the function a sweep agent should call.
+    """
+    init_config = _build_init_config(
+        base_cfg,
+        project=project,
+        group=group,
+        label=label,
+        arch=arch,
+        extra_config=extra_config,
+    )
+
+    with wandb.init(project=project, group=group, config=init_config):
+        wb_cfg = wandb.config
+
+        resolved_cfg = _merge_cfg_from_wandb(base_cfg, wb_cfg)
+        resolved_arch = wb_cfg.get("arch", arch)
+        resolved_label = wb_cfg.get("label", label)
+
+        model = build(resolved_arch, resolved_cfg)
+        tx, ty, vx, vy = make_modular_dataset(resolved_cfg.p, seed=resolved_cfg.seed)
+
+        return train_loop(
+            model,
+            resolved_cfg,
+            tx,
+            ty,
+            vx,
+            vy,
+            label=resolved_label,
+        )

@@ -3,9 +3,10 @@
 from pan.models import PAN, Transformer, build
 from pan.config import TrainConfig
 from pan.data import make_modular_dataset
-from pan.training import train
+from pan.training import train_loop, run_training
 from pan.sweep import grid_search
 from pan.constants import DEVICE
 
+
 __all__ = ["PAN", "Transformer", "build", "TrainConfig", "make_modular_dataset",
-           "train", "grid_search", "DEVICE"]
+           "train_loop", "run_training", "grid_search", "DEVICE"]
