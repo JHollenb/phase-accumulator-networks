@@ -209,13 +209,35 @@ def tf_sweep(
     p: int = 113, steps: int = 100_000, seed: int = 42,
     log_every: int = 200, dry_run: bool = False,
 ):
-    """Minimum transformer size (5 d_model × 3 seeds)."""
-    cfg = _cfg(p=p, steps=steps, seed=seed, log_every=log_every, dry_run=dry_run)
-    _banner(cfg, "TF sweep")
-    wandb.init(project="pan", group="tf-sweep", name="parent", config=cfg.model_dump())
-    results = grid_search(cfg, vary={"d_model": [8, 16, 32, 64, 128]},
-                          arch="transformer", fixed={"weight_decay": 1.0})
-    print_results(results, "d_model", "Transformer Size Sweep")
+    cfg = _cfg(p=p, k=k, steps=steps, seed=seed, wd=wd, dw=dw,
+               no_compile=no_compile, no_early_stop=no_early_stop,
+               log_every=log_every, out=out, dry_run=dry_run)
+    _banner(cfg, "compare")
+    tx, ty, vx, vy = make_modular_dataset(cfg.p, seed=cfg.seed)
+
+    pan = PAN(cfg.p, k=cfg.k_freqs).to(DEVICE)
+    console.print(f"  PAN: {pan.count_parameters():,}  TF: {tf.count_parameters():,}  "
+                  f"ratio: {tf.count_parameters() / pan.count_parameters():.0f}×")
+
+    # Define metrics for both models upfront — avoids duplicate panels from
+    # calling define_metric mid-run after data has already been logged.
+    train(pan, cfg, tx, ty, vx, vy, label="PAN")
+
+@app.command()
+def sweep_test(
+    p: int = 113, steps: int = 50_000, seed: int = 42,
+    wd: float = 0.01, dw: float = 0.01,
+    log_every: int = 200, dry_run: bool = False,
+):
+    """Find minimum K for reliable grokking (K=1..15 × 3 seeds)."""
+    cfg = _cfg(p=p, steps=steps, seed=seed, wd=wd, dw=dw, log_every=log_every, dry_run=dry_run)
+    _banner(cfg, "K sweep")
+    wandb.init(project="pan", group="k-sweep", name="parent", config=cfg.model_dump())
+    results = grid_search(cfg, vary={"k_freqs": list(range(1, 16))})
+    print_results(results, "K", "K Sweep — Minimum Reliable K")
+    reliable = [k for k, r in results.items() if r["n_grokked"] >= 2]
+    if reliable:
+        console.print(f"  [green]Minimum reliable K: {min(reliable)}[/]")
     wandb.finish()
 
 
