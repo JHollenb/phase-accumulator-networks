@@ -70,6 +70,11 @@ def compare(
                   f"ratio: {tf.count_parameters() / pan.count_parameters():.0f}×")
 
     wandb.init(project="pan", name=f"compare-p{p}-k{k}-s{seed}", config=cfg.model_dump())
+    # Define metrics for both models upfront — avoids duplicate panels from
+    # calling define_metric mid-run after data has already been logged.
+    from pan.training import define_wandb_metrics
+    define_wandb_metrics("PAN")
+    define_wandb_metrics("TF")
     train(pan, cfg, tx, ty, vx, vy, label="PAN")
     train(tf, cfg.overlay(weight_decay=1.0), tx, ty, vx, vy, label="TF")
     wandb.finish()
@@ -112,7 +117,7 @@ def sweep(
     cfg = _cfg(p=p, steps=steps, seed=seed, wd=wd, dw=dw, log_every=log_every, dry_run=dry_run)
     _banner(cfg, "K sweep")
     wandb.init(project="pan", group="k-sweep", name="parent", config=cfg.model_dump())
-    results = grid_search(cfg, vary={"k_freqs": list(range(8, 11))})
+    results = grid_search(cfg, vary={"k_freqs": list(range(1, 16))})
     print_results(results, "K", "K Sweep — Minimum Reliable K")
     reliable = [k for k, r in results.items() if r["n_grokked"] >= 2]
     if reliable:

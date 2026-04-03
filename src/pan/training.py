@@ -42,6 +42,24 @@ def _fourier_concentration(W: torch.Tensor, top_k: int = 10) -> float:
     return energy.reshape(-1).topk(min(top_k, energy.numel())).values.sum().item() / total if total > 1e-10 else 0.0
 
 
+_defined_labels: set[str] = set()
+
+
+def reset_metrics():
+    """Clear the defined-labels cache. Call when starting a new wandb run."""
+    _defined_labels.clear()
+
+
+def define_wandb_metrics(label: str):
+    """Register a label's metric namespace with wandb. Idempotent within a run."""
+    if label in _defined_labels:
+        return
+    step_key = f"{label}_step"
+    wandb.define_metric(step_key, hidden=True)
+    wandb.define_metric(f"{label}/*", step_metric=step_key)
+    _defined_labels.add(label)
+
+
 def train(
     model: ModularModel,
     cfg: TrainConfig,
@@ -67,13 +85,9 @@ def train(
         console.print(f"  [yellow]dry-run[/] {label} — {cfg.n_steps:,} steps skipped")
         return None
 
-    # Each label gets its own step axis so multiple models can coexist in
-    # one wandb run.  The step key uses a _step suffix (not inside the label/
-    # namespace) so it doesn't match the "{label}/*" glob and doesn't get
-    # auto-charted as a metric — which was causing duplicate panels.
+    # Register this label's metrics with wandb (idempotent)
+    define_wandb_metrics(label)
     step_key = f"{label}_step"
-    wandb.define_metric(step_key, hidden=True)
-    wandb.define_metric(f"{label}/*", step_metric=step_key)
 
     torch.manual_seed(cfg.seed)
     compiled = _maybe_compile(model, cfg.use_compile)

@@ -15,7 +15,7 @@ from pan.constants import DEVICE
 from pan.data import make_modular_dataset
 from pan.models import build
 from pan.models.pan import PAN
-from pan.training import train
+from pan.training import train, reset_metrics
 
 console = Console()
 
@@ -55,6 +55,8 @@ def grid_search(
             sub = cfg.overlay(**merged)
             effective_seed = merged.get("seed", seed)
 
+            # TODO - watch this...
+            reset_metrics()
             wandb.init(
                 project=wandb.run.project if wandb.run else "pan",
                 group=wandb.run.group if wandb.run else "sweep",
