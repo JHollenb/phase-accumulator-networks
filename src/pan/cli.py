@@ -112,7 +112,7 @@ def sweep(
     cfg = _cfg(p=p, steps=steps, seed=seed, wd=wd, dw=dw, log_every=log_every, dry_run=dry_run)
     _banner(cfg, "K sweep")
     wandb.init(project="pan", group="k-sweep", name="parent", config=cfg.model_dump())
-    results = grid_search(cfg, vary={"k_freqs": list(range(1, 16))})
+    results = grid_search(cfg, vary={"k_freqs": list(range(8, 11))})
     print_results(results, "K", "K Sweep — Minimum Reliable K")
     reliable = [k for k, r in results.items() if r["n_grokked"] >= 2]
     if reliable:

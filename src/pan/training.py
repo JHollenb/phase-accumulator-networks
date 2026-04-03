@@ -67,11 +67,12 @@ def train(
         console.print(f"  [yellow]dry-run[/] {label} — {cfg.n_steps:,} steps skipped")
         return None
 
-    # Tell wandb that all "{label}/*" metrics use their own step axis.
-    # This lets multiple models (PAN, TF) train in the same run without
-    # step-monotonicity conflicts.
-    step_key = f"{label}/step"
-    wandb.define_metric(step_key)
+    # Each label gets its own step axis so multiple models can coexist in
+    # one wandb run.  The step key uses a _step suffix (not inside the label/
+    # namespace) so it doesn't match the "{label}/*" glob and doesn't get
+    # auto-charted as a metric — which was causing duplicate panels.
+    step_key = f"{label}_step"
+    wandb.define_metric(step_key, hidden=True)
     wandb.define_metric(f"{label}/*", step_metric=step_key)
 
     torch.manual_seed(cfg.seed)
