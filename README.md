@@ -36,40 +36,16 @@ grok_step = train(model, cfg, tx, ty, vx, vy, label="test")
 wandb.finish()
 ```
 
-## Grid Search API
-
-```python
-from pan import TrainConfig, grid_search
-
-cfg = TrainConfig(p=113, n_steps=50_000)
-results = grid_search(
-    cfg,
-    vary={"k_freqs": [3, 5, 7, 9, 11]},
-    seeds=[42, 123, 456],
-)
-# results[5] = {"n_grokked": 3, "mean_step": 1200.0, ...}
-```
-
 ## Adding a New Experiment
 
-Add a command to `cli.py`:
-
-```python
-@app.command()
-def my_experiment(p: int = 113, steps: int = 50_000, ...):
-    """One-line description."""
-    cfg = _cfg(p=p, steps=steps, ...)
-    wandb.init(project="pan", name="my-experiment", config=cfg.model_dump())
-    results = grid_search(cfg, vary={"lr": [1e-4, 1e-3, 1e-2]})
-    print_results(results, "lr", "Learning Rate Sweep")
-    wandb.finish()
-```
+Review experiments.py and follow the format.
 
 Or skip the CLI entirely and use the library API in a notebook.
 
 ## Project Structure
 
 ```
+experiments.py         # Experiments to perform
 src/pan/
 ├── __init__.py        # Public API: PAN, Transformer, train, grid_search
 ├── cli.py             # Typer commands (one per experiment)
@@ -77,7 +53,6 @@ src/pan/
 ├── constants.py       # DEVICE, TWO_PI, SIFP_QUANT_ERROR
 ├── data.py            # make_modular_dataset
 ├── training.py        # train() — logs to wandb, returns grok_step
-├── sweep.py           # grid_search() + print_results()
 └── models/
     ├── base.py        # ModularModel (count_parameters, auxiliary_loss)
     ├── pan.py         # PAN, PhaseEncoder, PhaseMixer, PhaseGate
@@ -97,8 +72,3 @@ src/pan/
 - **Config is immutable.** `cfg.overlay(seed=99)` returns a new config.
   Serialises to JSON/wandb with `.model_dump()`.
 
-## Tests
-
-```bash
-uv run pytest
-```
