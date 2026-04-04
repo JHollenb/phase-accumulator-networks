@@ -23,7 +23,6 @@ import wandb
 from rich.console import Console
 
 from pan.config import TrainConfig
-from pan.constants import DEVICE
 from pan.data import make_modular_dataset
 from pan.models import build
 from pan.models.base import ModularModel
@@ -471,7 +470,7 @@ def train_loop(
 
     ex, ey = val_x, val_y
     if getattr(cfg, "val_samples", None) and cfg.val_samples < len(val_x):
-        idx = torch.randperm(len(val_x), device=DEVICE)[: cfg.val_samples]
+        idx = torch.randperm(len(val_x), device=cfg.device)[: cfg.val_samples]
         ex, ey = val_x[idx], val_y[idx]
 
     n_train = len(train_x)
@@ -489,7 +488,7 @@ def train_loop(
         step_t0 = time.time()
 
         compiled.train()
-        idx = torch.randperm(n_train, device=DEVICE)[: cfg.batch_size]
+        idx = torch.randperm(n_train, device=cfg.device)[: cfg.batch_size]
         batch_x, batch_y = train_x[idx], train_y[idx]
 
         logits = compiled(batch_x)
@@ -724,6 +723,7 @@ def run_training(
         tx, ty, vx, vy = make_modular_dataset(
             resolved_cfg.p,
             seed=resolved_cfg.seed,
+            device=resolved_cfg.device
         )
 
         result = train_loop(
