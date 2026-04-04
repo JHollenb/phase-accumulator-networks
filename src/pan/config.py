@@ -27,7 +27,7 @@ class TrainConfig(BaseModel):
     seed: int = 42
 
     # architecture
-    k_freqs: int = 9
+    k_freqs: int = 13
     d_model: int = 128
     n_heads: int = 4
     d_mlp: int = 512
