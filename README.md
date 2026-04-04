@@ -11,26 +11,12 @@ A neural architecture where sinusoidal phase addition replaces multiply-accumula
 uv sync
 wandb login          # one-time setup
 
-# Head-to-head comparison
-uv run pan compare --p 113 --k 5
-
-# Parameter sweep
-uv run pan sweep --p 113 --steps 50000
-
-# Cross-prime generalisation
-uv run pan primes --k 9
-
-# Mechanistic analysis with frequency checkpoints
-uv run pan tier3 --p 113 --k 9 --steps 100000
-
-# Overnight sweeps
-uv run pan dw-sweep --steps 100000
-uv run pan wd-sweep --steps 100000
-uv run pan k8 --steps 200000
-uv run pan tf-sweep --steps 100000
-
-# Held-out primes
-uv run pan held-out --steps 200000
+uv run experiment.py exp1-k8-anomaly
+uv run experiment.py exp2-tier3
+uv run experiment.py exp3-lr-sweep
+uv run experiment.py exp4-wd-schedule
+uv run experiment.py exp5-nanda-init
+uv run experiment.py exp6-slot-util-phase2
 ```
 
 Every run logs to wandb automatically. View live training curves, frequency
