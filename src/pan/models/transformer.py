@@ -7,7 +7,6 @@ from pan.models.base import ModularModel
 
 
 class Transformer(ModularModel):
-    """~227K params for P=113, d=128."""
 
     def __init__(self, p: int, d_model: int = 128, n_heads: int = 4, d_mlp: int = 512):
         super().__init__()
